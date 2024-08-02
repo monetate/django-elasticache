@@ -17,7 +17,7 @@ class WrongProtocolData(ValueError):
             'Unexpected response {0} for command {1}'.format(response, cmd))
 
 
-def get_cluster_info(host, port, ignore_cluster_errors=False):
+def get_cluster_info(host, port, discovery_timeout, ignore_cluster_errors=False):
     """
     return dict with info about nodes in cluster and current version
     {
@@ -28,7 +28,10 @@ def get_cluster_info(host, port, ignore_cluster_errors=False):
         'version': '1.4.4'
     }
     """
-    client = Telnet(host, int(port))
+    if discovery_timeout:
+        client = Telnet(host, int(port), timeout=discovery_timeout)
+    else:  # use telnet's default timeout (socket._GLOBAL_DEFAULT_TIMEOUT)
+        client = Telnet(host, int(port))
     client.write(b'version\n')
     res = client.read_until(b'\r\n').strip()
     version_list = res.split(b' ')

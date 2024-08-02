@@ -27,7 +27,7 @@ class ElastiCache(PyLibMCCache):
     backend for Amazon ElastiCache (memcached) with auto discovery mode
     it used pylibmc in binary mode
     """
-    def __init__(self, server, params):
+    def __init__(self, server, params, discovery_timeout=None):
         self.update_params(params)
         super(ElastiCache, self).__init__(server, params)
         if len(self._servers) > 1:
@@ -38,6 +38,7 @@ class ElastiCache(PyLibMCCache):
             raise InvalidCacheBackendError(
                 'Server configuration should be in format IP:port')
 
+        self.discovery_timeout = discovery_timeout
         self._ignore_cluster_errors = self._options.get(
             'IGNORE_CLUSTER_ERRORS', False)
 
@@ -70,7 +71,7 @@ class ElastiCache(PyLibMCCache):
             server, port = self._servers[0].split(':')
             try:
                 self._cluster_nodes_cache = (
-                    get_cluster_info(server, port,
+                    get_cluster_info(server, port, self.discovery_timeout,
                                      self._ignore_cluster_errors)['nodes'])
             except (socket.gaierror, socket.timeout) as err:
                 raise Exception('Cannot connect to cluster {0} ({1})'.format(
