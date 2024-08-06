@@ -43,10 +43,11 @@ def get_cluster_info(host, port, discovery_timeout, ignore_cluster_errors=False)
     else:
         cmd = b'get AmazonElastiCache:cluster\n'
     client.write(cmd)
+    # note expect() does not use the client's socket timeout by default
     regex_index, match_object, res = client.expect([
         re.compile(b'\n\r\nEND\r\n'),
         re.compile(b'ERROR\r\n')
-    ])
+    ], timeout=discovery_timeout)
     client.close()
 
     if res == b'ERROR\r\n' and ignore_cluster_errors:
