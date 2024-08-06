@@ -38,7 +38,14 @@ Your cache backend should look something like this::
             'LOCATION': 'cache-c.draaaf.cfg.use1.cache.amazonaws.com:11211',
             'OPTIONS': {
                 'IGNORE_CLUSTER_ERRORS': [True,False],
+                'behaviors': {  # pylibmc behaviors, passed to underlying client
+                    'ketama': True,
+                    'receive_timeout': 50,  # milliseconds, socket timeout for memcached reads
+                    'send_timeout': 50,  # milliseconds, socket timeout for memcached writes
+                },
             },
+            'DISCOVERY_TIMEOUT': 0.1,  # seconds, Elasticache discovery connection timeout
+            'TIMEOUT': 600,  # seconds, default memcached key expiration time if not specified in set()
         }
     }
 
@@ -55,7 +62,13 @@ The ``IGNORE_CLUSTER_ERRORS`` option is useful when ``LOCATION`` doesn't have su
 for ``config get cluster``. When set to ``True``, and ``config get cluster`` fails,
 it returns a list of a single node with the same endpoint supplied to ``LOCATION``.
 
-Django-elasticache changes default pylibmc params to increase performance.
+DISCOVERY_TIMEOUT controls how long to wait for response to any command during the
+discovery sequence, including initial connection and any subsequent commands. This is
+passed to the underlying socket used in the Telnet connection for communicating with
+the ElastiCache cluster. Measured in seconds.
+
+Django-elasticache does not change default pylibmc params. The user should set
+performance-related params in the cache configuration.
 
 Another solutions
 -----------------

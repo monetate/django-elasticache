@@ -37,7 +37,14 @@ class ElastiCache(PyLibMCCache):
             raise InvalidCacheBackendError(
                 'Server configuration should be in format IP:port')
 
-        self.discovery_timeout = params.get('DISCOVERY_TIMEOUT', None)
+        # Django's pylibmc backend merges the 'behaviors' dict into the upper
+        # level 'OPTIONS' dict but is rather indiscriminate in doing so - even
+        # if you have other top-level keys in 'OPTIONS' they end up on the same
+        # level as the keys you had inside params['OPTIONS']['behaviors'] so
+        # now you can't tell whether the key came from 'behaviors' or was a top
+        # level key in 'OPTIONS'. Work around all of this by just putting the
+        # DISCOVERY_TIMEOUT key at the same level as 'OPTIONS'.
+        self._discovery_timeout = params.get('DISCOVERY_TIMEOUT', None)
         self._ignore_cluster_errors = self._options.get(
             'IGNORE_CLUSTER_ERRORS', False)
 
@@ -54,7 +61,7 @@ class ElastiCache(PyLibMCCache):
             server, port = self._servers[0].split(':')
             try:
                 self._cluster_nodes_cache = (
-                    get_cluster_info(server, port, self.discovery_timeout,
+                    get_cluster_info(server, port, self._discovery_timeout,
                                      self._ignore_cluster_errors)['nodes'])
             except (socket.gaierror, socket.timeout) as err:
                 raise Exception('Cannot connect to cluster {0} ({1})'.format(
