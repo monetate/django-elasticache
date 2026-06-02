@@ -73,25 +73,17 @@ performance-related params in the cache configuration.
 Thread safety
 -------------
 
-The default ``ElastiCache`` backend caches a single ``pylibmc.Client`` on the
-backend instance, which is shared by every thread in the process. ``pylibmc``
-releases the GIL during socket I/O, so a client shared across threads can have
-its reads and writes interleave on the same connection, causing intermittent
-libmemcached errors (protocol desync / ``MEMCACHED_END``, ``EBADF``, "No
-active_fd" timeouts). This is especially likely under a threaded server with
-aggressive socket timeouts.
+``ElastiCache`` stores its ``pylibmc.Client`` in a ``threading.local`` so each
+thread that uses the cache lazily builds and reuses its own client. Cluster-node
+discovery results stay shared on the instance; only the client connections are
+per thread.
 
-For threaded deployments use ``ThreadLocalElastiCache``, which stores the
-``pylibmc.Client`` in thread-local storage so each thread gets its own client
-(cluster-node discovery is still shared)::
-
-    CACHES = {
-        'default': {
-            'BACKEND': 'django_elasticache.threadlocal.ThreadLocalElastiCache',
-            'LOCATION': 'cache-c.draaaf.cfg.use1.cache.amazonaws.com:11211',
-            'OPTIONS': {...},
-        }
-    }
+``pylibmc`` releases the GIL during socket I/O, so a shared ``pylibmc.Client``
+across threads can have its reads and writes interleave on the same connection,
+causing intermittent libmemcached errors (protocol desync / ``MEMCACHED_END``,
+``EBADF``, "No active_fd" timeouts). The per-thread storage sidesteps this at
+the cost of one open client per worker thread instead of one per process. No
+opt-in is required.
 
 Another solutions
 -----------------

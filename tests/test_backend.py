@@ -1,3 +1,4 @@
+import threading
 from django.conf import global_settings
 from nose.tools import eq_, raises
 import sys
@@ -68,11 +69,38 @@ def test_invalidate_cache(get_cluster_info):
     except Exception:
         pass
     #  invalidate cached client
-    container = getattr(backend, '_local', backend)
-    container._client = None
+    backend._local.client = None
     try:
         backend.get('key1', 'val')
     except Exception:
         pass
     eq_(backend._cache.get.call_count, 2)
     eq_(get_cluster_info.call_count, 2)
+
+
+@patch("django.conf.settings", global_settings)
+@patch("django_elasticache.memcached.get_cluster_info")
+def test_client_is_per_thread(get_cluster_info):
+    get_cluster_info.return_value = {"nodes": ["h1:p", "h2:p"]}
+    backend = ElastiCache("h:0", {})
+    # Each call to the Client constructor returns a distinct mock so we can tell threads apart.
+    backend._lib.Client = Mock(side_effect=lambda *a, **k: Mock())
+
+    clients = {}
+
+    def grab(name):
+        clients[name] = backend._cache
+
+    main_client = backend._cache
+    t1 = threading.Thread(target=grab, args=("t1",))
+    t2 = threading.Thread(target=grab, args=("t2",))
+    t1.start()
+    t1.join()
+    t2.start()
+    t2.join()
+
+    # main, t1, t2 each built their own client.
+    assert clients["t1"] is not clients["t2"]
+    assert clients["t1"] is not main_client
+    assert clients["t2"] is not main_client
+    eq_(backend._lib.Client.call_count, 3)
