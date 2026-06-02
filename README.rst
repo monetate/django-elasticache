@@ -70,6 +70,21 @@ the ElastiCache cluster. Measured in seconds.
 Django-elasticache does not change default pylibmc params. The user should set
 performance-related params in the cache configuration.
 
+Thread safety
+-------------
+
+``ElastiCache`` stores its ``pylibmc.Client`` in a ``threading.local`` so each
+thread that uses the cache lazily builds and reuses its own client. Cluster-node
+discovery results stay shared on the instance; only the client connections are
+per thread.
+
+``pylibmc`` releases the GIL during socket I/O, so a shared ``pylibmc.Client``
+across threads can have its reads and writes interleave on the same connection,
+causing intermittent libmemcached errors (protocol desync / ``MEMCACHED_END``,
+``EBADF``, "No active_fd" timeouts). The per-thread storage sidesteps this at
+the cost of one open client per worker thread instead of one per process. No
+opt-in is required.
+
 Another solutions
 -----------------
 

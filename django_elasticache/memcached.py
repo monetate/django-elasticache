@@ -2,6 +2,7 @@
 Backend for django cache
 """
 import socket
+import threading
 from functools import wraps
 from django.core.cache import InvalidCacheBackendError
 from django.core.cache.backends.memcached import PyLibMCCache
@@ -48,6 +49,12 @@ class ElastiCache(PyLibMCCache):
         self._ignore_cluster_errors = self._options.get(
             'IGNORE_CLUSTER_ERRORS', False)
 
+        # pylibmc.Client is NOT thread-safe: pylibmc releases the GIL during socket I/O, so two threads using the same
+        # Client can interleave reads and writes on the same connection and desync the protocol (MEMCACHED_END where
+        # STORED was expected, EBADF on a socket another thread tore down, MEMCACHED_TIMEOUT "No active_fd"). Store the
+        # Client in a threading.local so each thread gets its own.
+        self._local = threading.local()
+
     def clear_cluster_nodes_cache(self):
         """clear internal cache with list of nodes in cluster"""
         if hasattr(self, '_cluster_nodes_cache'):
@@ -71,15 +78,11 @@ class ElastiCache(PyLibMCCache):
 
     @property
     def _cache(self):
-        # PylibMC uses cache options as the 'behaviors' attribute.
-        # It also needs to use threadlocals, because some versions of
-        # PylibMC don't play well with the GIL.
-
-        # instance to store cached version of client
-        # in Django 1.7 use self
-        # in Django < 1.7 use thread local
-        container = getattr(self, '_local', self)
-        client = getattr(container, '_client', None)
+        # pylibmc.Client is cached per-thread on self._local to avoid the cross-thread protocol-desync race. Cluster
+        # node discovery results stay shared on the instance via get_cluster_nodes(), only the client connections become
+        # per thread.
+        # See django-pylibmc: https://github.com/django-pylibmc/django-pylibmc/blob/master/django_pylibmc/memcached.py
+        client = getattr(self._local, 'client', None)
         if client:
             return client
 
@@ -90,7 +93,7 @@ class ElastiCache(PyLibMCCache):
             # key does not exist
             client.behaviors = self._options.get('behaviors', self._options)
 
-        container._client = client
+        self._local.client = client
 
         return client
 
