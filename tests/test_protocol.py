@@ -46,7 +46,7 @@ def test_happy_path(Telnet):
     client = Telnet.return_value
     client.read_until.side_effect = TEST_PROTOCOL_1_READ_UNTIL
     client.expect.side_effect = TEST_PROTOCOL_1_EXPECT
-    info = get_cluster_info('', 0)
+    info = get_cluster_info('', 0, None)
     eq_(info['version'], 1)
     eq_(info['nodes'], ['ip:port', 'host:port'])
 
@@ -54,7 +54,7 @@ def test_happy_path(Telnet):
 @raises(WrongProtocolData)
 @patch('django_elasticache.cluster_utils.Telnet', MagicMock())
 def test_bad_protocol():
-    get_cluster_info('', 0)
+    get_cluster_info('', 0, None)
 
 
 @patch('django_elasticache.cluster_utils.Telnet')
@@ -62,7 +62,7 @@ def test_last_versions(Telnet):
     client = Telnet.return_value
     client.read_until.side_effect = TEST_PROTOCOL_1_READ_UNTIL
     client.expect.side_effect = TEST_PROTOCOL_1_EXPECT
-    get_cluster_info('', 0)
+    get_cluster_info('', 0, None)
     client.write.assert_has_calls([
         call(b'version\n'),
         call(b'config get cluster\n'),
@@ -74,7 +74,7 @@ def test_prev_versions(Telnet):
     client = Telnet.return_value
     client.read_until.side_effect = TEST_PROTOCOL_2_READ_UNTIL
     client.expect.side_effect = TEST_PROTOCOL_2_EXPECT
-    get_cluster_info('', 0)
+    get_cluster_info('', 0, None)
     client.write.assert_has_calls([
         call(b'version\n'),
         call(b'get AmazonElastiCache:cluster\n'),
@@ -88,7 +88,7 @@ def test_ubuntu_protocol(Telnet):
     client.expect.side_effect = TEST_PROTOCOL_3_EXPECT
 
     try:
-        get_cluster_info('', 0)
+        get_cluster_info('', 0, None)
     except WrongProtocolData:
         raise AssertionError('Raised WrongProtocolData with Ubuntu version.')
 
@@ -103,7 +103,7 @@ def test_no_configuration_protocol_support_with_errors_ignored(Telnet):
     client = Telnet.return_value
     client.read_until.side_effect = TEST_PROTOCOL_4_READ_UNTIL
     client.expect.side_effect = TEST_PROTOCOL_4_EXPECT
-    info = get_cluster_info('test', 0, ignore_cluster_errors=True)
+    info = get_cluster_info('test', 0, None, ignore_cluster_errors=True)
     client.write.assert_has_calls([
         call(b'version\n'),
         call(b'config get cluster\n'),
@@ -118,7 +118,7 @@ def test_no_configuration_protocol_support_with_errors(Telnet):
     client = Telnet.return_value
     client.read_until.side_effect = TEST_PROTOCOL_4_READ_UNTIL
     client.expect.side_effect = TEST_PROTOCOL_4_EXPECT
-    get_cluster_info('test', 0, ignore_cluster_errors=False)
+    get_cluster_info('test', 0, None, ignore_cluster_errors=False)
     client.write.assert_has_calls([
         call(b'version\n'),
         call(b'config get cluster\n'),
