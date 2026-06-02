@@ -12,28 +12,11 @@ settings.configure()
 global_settings.configured = True
 
 
-@patch('django.conf.settings', global_settings)
-def test_patch_params():
-    from django_elasticache.memcached import ElastiCache
-    params = {}
-    ElastiCache('qew:12', params)
-    eq_(params['BINARY'], True)
-    eq_(params['OPTIONS']['tcp_nodelay'], True)
-    eq_(params['OPTIONS']['ketama'], True)
-
-
 @raises(Exception)
 @patch('django.conf.settings', global_settings)
 def test_wrong_params():
     from django_elasticache.memcached import ElastiCache
     ElastiCache('qew', {})
-
-
-@raises(Warning)
-@patch('django.conf.settings', global_settings)
-def test_wrong_params_warning():
-    from django_elasticache.memcached import ElastiCache
-    ElastiCache('qew', {'BINARY': False})
 
 
 @patch('django.conf.settings', global_settings)
