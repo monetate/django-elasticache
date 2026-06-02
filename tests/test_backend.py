@@ -1,4 +1,4 @@
-from django.conf import global_settings, settings
+from django.conf import global_settings
 from nose.tools import eq_, raises
 import sys
 if sys.version < '3':
@@ -6,23 +6,18 @@ if sys.version < '3':
 else:
     from unittest.mock import patch, Mock
 
-
-# Initialize django 1.7
-settings.configure()
-global_settings.configured = True
+from django_elasticache.memcached import ElastiCache
 
 
 @raises(Exception)
 @patch('django.conf.settings', global_settings)
 def test_wrong_params():
-    from django_elasticache.memcached import ElastiCache
     ElastiCache('qew', {})
 
 
 @patch('django.conf.settings', global_settings)
 @patch('django_elasticache.memcached.get_cluster_info')
 def test_split_servers(get_cluster_info):
-    from django_elasticache.memcached import ElastiCache
     backend = ElastiCache('h:0', {})
     servers = ['h1:p', 'h2:p']
     get_cluster_info.return_value = {
@@ -37,7 +32,6 @@ def test_split_servers(get_cluster_info):
 @patch('django.conf.settings', global_settings)
 @patch('django_elasticache.memcached.get_cluster_info')
 def test_node_info_cache(get_cluster_info):
-    from django_elasticache.memcached import ElastiCache
     servers = ['h1:p', 'h2:p']
     get_cluster_info.return_value = {
         'nodes': servers
@@ -59,7 +53,6 @@ def test_node_info_cache(get_cluster_info):
 @patch('django.conf.settings', global_settings)
 @patch('django_elasticache.memcached.get_cluster_info')
 def test_invalidate_cache(get_cluster_info):
-    from django_elasticache.memcached import ElastiCache
     servers = ['h1:p', 'h2:p']
     get_cluster_info.return_value = {
         'nodes': servers
