@@ -1,26 +1,89 @@
 """
-Backend for django cache
+Backend for django cache.
+
+``pylibmc.Client`` is not thread-safe: pylibmc releases the GIL during socket I/O, so two threads sharing one
+client interleave reads and writes on the same connection and desync the protocol. ``ElastiCache`` addresses this
+by keeping a bounded ``pylibmc.ClientPool`` per process and handing each operation its own client from the pool,
+so connection count is ``POOL_SIZE * processes-per-box * boxes`` rather than one-per-thread.
+
+Top-level configuration params (siblings of ``OPTIONS``, like ``DISCOVERY_TIMEOUT``):
+
+- ``POOL_SIZE`` (int, default 8): number of pooled clients per process.
+- ``POOL_TIMEOUT_MS`` (int, milliseconds, default 1000): how long to wait for a free client before raising
+  ``QueueEmpty``. Callers such as ``KeyCheckingMemcache`` catch and handle this like any other cache error.
+
+The pool is built lazily on first use (cluster discovery must happen first) under a lock so concurrent first
+calls do not each build their own pool.
 """
 import socket
+import sys
 import threading
 from functools import wraps
 from django.core.cache import InvalidCacheBackendError
 from django.core.cache.backends.memcached import PyLibMCCache
 from .cluster_utils import get_cluster_info
 
+if sys.version_info[0] < 3:
+    from Queue import Empty as QueueEmpty
+else:
+    from queue import Empty as QueueEmpty
+
+# Number of pooled pylibmc.Client objects per backend instance per process.
+DEFAULT_POOL_SIZE = 8
+
+# On exhaustion raises QueueEmpty.
+DEFAULT_POOL_TIMEOUT_MS = 1000
+
+
+def _validate_positive_int(name, value):
+    # Explicitly check bool since it is a subclass of int in Python.
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise InvalidCacheBackendError("{0} must be a positive integer, got {1!r}".format(name, value))
+    return int(value)
+
 
 def invalidate_cache_after_error(f):
-    """
-    catch any exception and invalidate internal cache with list of nodes
+    """Catch exceptions from cache operations and invalidate the cluster node cache and client pool so both are
+    rebuilt on the next call. QueueEmpty (pool exhaustion) is re-raised without invalidating since it is not a
+    topology error.
     """
     @wraps(f)
     def wrapper(self, *args, **kwds):
         try:
             return f(self, *args, **kwds)
+        except QueueEmpty:  # Don't clear cluster nodes on pool exhaustion.
+            raise
+        # TODO: Narrow to only invalidate on system/network-level errors. Clearing nodes on any exception is too broad
+        # and causes unnecessary rediscovery churn.
         except Exception:
             self.clear_cluster_nodes_cache()
             raise
     return wrapper
+
+
+class PooledClient(object):
+    """Proxy that routes each cache operation through a pylibmc.ClientPool reservation.
+
+    Django's BaseMemcachedCache calls operations directly on whatever ``_cache`` returns (e.g.
+    ``self._cache.get(key)``). Returning this proxy makes every such call check a client out of the pool, run
+    the operation, and return the client, so the number of live pylibmc.Client objects (open connections) is bounded by
+    the pool size rather than by the worker thread count.
+    """
+
+    def __init__(self, pool, timeout=None):
+        self.pool = pool
+        self.timeout = timeout  # Seconds to wait for a free client before raising QueueEmpty.
+
+    def __getattr__(self, name):
+        def call(*args, **kwargs):
+            # ClientPool is a Queue subclass. Call get()/put() directly rather than reserve() because it does not expose
+            # a timeout parameter. Raises QueueEmpty on pool exhaustion; callers (e.g. KeyCheckingMemcache) handle it.
+            mc = self.pool.get(block=True, timeout=self.timeout)
+            try:
+                return getattr(mc, name)(*args, **kwargs)
+            finally:
+                self.pool.put(mc)
+        return call
 
 
 class ElastiCache(PyLibMCCache):
@@ -49,16 +112,24 @@ class ElastiCache(PyLibMCCache):
         self._ignore_cluster_errors = self._options.get(
             'IGNORE_CLUSTER_ERRORS', False)
 
-        # pylibmc.Client is NOT thread-safe: pylibmc releases the GIL during socket I/O, so two threads using the same
-        # Client can interleave reads and writes on the same connection and desync the protocol (MEMCACHED_END where
-        # STORED was expected, EBADF on a socket another thread tore down, MEMCACHED_TIMEOUT "No active_fd"). Store the
-        # Client in a threading.local so each thread gets its own.
-        self._local = threading.local()
+        self.pool_size = _validate_positive_int("POOL_SIZE", params.get("POOL_SIZE", DEFAULT_POOL_SIZE))
+        self.pool_timeout = _validate_positive_int(
+            "POOL_TIMEOUT_MS", params.get("POOL_TIMEOUT_MS", DEFAULT_POOL_TIMEOUT_MS)
+        ) / 1000.0  # Python's Queue.get(timeout) takes seconds.
+
+        self._pool_lock = threading.Lock()
+        self._pool_proxy = None
 
     def clear_cluster_nodes_cache(self):
-        """clear internal cache with list of nodes in cluster"""
-        if hasattr(self, '_cluster_nodes_cache'):
-            del self._cluster_nodes_cache
+        """Clear the cached cluster node list and drop the client pool so both are rebuilt on next use.
+
+        Acquires _pool_lock so a concurrent _cache build that already fetched stale nodes cannot overwrite
+        the cleared _pool_proxy after this method returns.
+        """
+        with self._pool_lock:
+            if hasattr(self, '_cluster_nodes_cache'):
+                del self._cluster_nodes_cache
+            self._pool_proxy = None
 
     def get_cluster_nodes(self):
         """
@@ -78,24 +149,24 @@ class ElastiCache(PyLibMCCache):
 
     @property
     def _cache(self):
-        # pylibmc.Client is cached per-thread on self._local to avoid the cross-thread protocol-desync race. Cluster
-        # node discovery results stay shared on the instance via get_cluster_nodes(), only the client connections become
-        # per thread.
-        # See django-pylibmc: https://github.com/django-pylibmc/django-pylibmc/blob/master/django_pylibmc/memcached.py
-        client = getattr(self._local, 'client', None)
-        if client:
-            return client
+        # _pool_proxy is safe to read without the lock, only written under _pool_lock during initialization.
+        if self._pool_proxy is not None:
+            return self._pool_proxy
 
-        client = self._lib.Client(self.get_cluster_nodes())
-        if self._options:
-            # In Django 1.11, all behaviors are shifted into a behaviors dict
-            # Attempt to get from there, and fall back to old behavior if the behaviors
-            # key does not exist
-            client.behaviors = self._options.get('behaviors', self._options)
+        with self._pool_lock:
+            # Re-check, another thread may have built the pool while waiting for the lock.
+            if self._pool_proxy is not None:
+                return self._pool_proxy
 
-        self._local.client = client
+            master = self._lib.Client(self.get_cluster_nodes())
+            if self._options:
+                # In Django 1.11, all behaviors are shifted into a behaviors dict. Attempt to get from there, and fall
+                # back to old behavior if the behaviors key does not exist.
+                master.behaviors = self._options.get("behaviors", self._options)
 
-        return client
+            pool = self._lib.ClientPool(master, self.pool_size)
+            self._pool_proxy = PooledClient(pool, self.pool_timeout)
+            return self._pool_proxy
 
     @invalidate_cache_after_error
     def get(self, *args, **kwargs):
