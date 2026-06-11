@@ -45,6 +45,7 @@ Your cache backend should look something like this::
                 },
             },
             'DISCOVERY_TIMEOUT': 0.1,  # seconds, Elasticache discovery connection timeout
+            'POOL_SIZE': 8,  # pylibmc clients pooled per process; see Thread safety
             'TIMEOUT': 600,  # seconds, default memcached key expiration time if not specified in set()
         }
     }
@@ -73,17 +74,27 @@ performance-related params in the cache configuration.
 Thread safety
 -------------
 
-``ElastiCache`` stores its ``pylibmc.Client`` in a ``threading.local`` so each
-thread that uses the cache lazily builds and reuses its own client. Cluster-node
-discovery results stay shared on the instance; only the client connections are
-per thread.
+``pylibmc`` releases the GIL during socket I/O, so a single ``pylibmc.Client``
+shared across threads can have its reads and writes interleave on the same
+connection, causing intermittent libmemcached errors (protocol desync /
+``MEMCACHED_END``, ``EBADF``, "No active_fd" timeouts). A ``pylibmc.Client`` is
+not safe to share between threads.
 
-``pylibmc`` releases the GIL during socket I/O, so a shared ``pylibmc.Client``
-across threads can have its reads and writes interleave on the same connection,
-causing intermittent libmemcached errors (protocol desync / ``MEMCACHED_END``,
-``EBADF``, "No active_fd" timeouts). The per-thread storage sidesteps this at
-the cost of one open client per worker thread instead of one per process. No
-opt-in is required.
+``ElastiCache`` keeps a bounded ``pylibmc.ClientPool`` per process and reserves
+a client from it for each cache operation, so no client is used by two threads
+at once. Open connections per cluster node are therefore ``POOL_SIZE *
+processes-per-box * boxes``, bounded by the pool size rather than the worker
+thread count. Cluster-node discovery results stay shared on the instance; only
+the client connections are pooled.
+
+``POOL_SIZE`` and ``POOL_TIMEOUT_MS`` are top-level cache options (siblings of
+``OPTIONS``, like ``DISCOVERY_TIMEOUT``). ``POOL_SIZE`` defaults to 8.
+``POOL_TIMEOUT_MS`` (milliseconds) defaults to 1000 and controls how long an
+operation waits for a free client before raising ``Queue.Empty``
+(``queue.Empty`` in python 3). The wait is NOT bounded by the pylibmc
+``connect_timeout`` / ``send_timeout`` / ``receive_timeout`` behaviors as those
+only apply during socket I/O after a client is obtained. Both must be plain
+positive integers.
 
 Another solutions
 -----------------

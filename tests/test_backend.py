@@ -4,16 +4,95 @@ from nose.tools import eq_, raises
 import sys
 if sys.version < '3':
     from mock import patch, Mock
+    from Queue import Empty as QueueEmpty
 else:
+    from queue import Empty as QueueEmpty
     from unittest.mock import patch, Mock
 
 from django_elasticache.memcached import ElastiCache
+from django.core.cache import InvalidCacheBackendError
 
 
 @raises(Exception)
 @patch('django.conf.settings', global_settings)
 def test_wrong_params():
     ElastiCache('qew', {})
+
+
+@raises(InvalidCacheBackendError)
+@patch('django.conf.settings', global_settings)
+def test_invalid_pool_size_string():
+    ElastiCache('h:0', {'POOL_SIZE': 'not-a-number'})
+
+
+@raises(InvalidCacheBackendError)
+@patch('django.conf.settings', global_settings)
+def test_invalid_pool_size_zero():
+    ElastiCache('h:0', {'POOL_SIZE': 0})
+
+
+@raises(InvalidCacheBackendError)
+@patch('django.conf.settings', global_settings)
+def test_invalid_pool_size_float():
+    ElastiCache('h:0', {'POOL_SIZE': 3.7})
+
+
+@raises(InvalidCacheBackendError)
+@patch('django.conf.settings', global_settings)
+def test_invalid_pool_size_bool():
+    ElastiCache('h:0', {'POOL_SIZE': True})
+
+
+@raises(InvalidCacheBackendError)
+@patch('django.conf.settings', global_settings)
+def test_invalid_pool_timeout_negative():
+    ElastiCache('h:0', {'POOL_TIMEOUT_MS': -1})
+
+
+@raises(InvalidCacheBackendError)
+@patch('django.conf.settings', global_settings)
+def test_invalid_pool_timeout_zero():
+    ElastiCache('h:0', {'POOL_TIMEOUT_MS': 0})
+
+
+@raises(InvalidCacheBackendError)
+@patch('django.conf.settings', global_settings)
+def test_invalid_pool_timeout_float():
+    ElastiCache('h:0', {'POOL_TIMEOUT_MS': 1.5})
+
+
+@raises(InvalidCacheBackendError)
+@patch('django.conf.settings', global_settings)
+def test_invalid_pool_timeout_bool():
+    ElastiCache('h:0', {'POOL_TIMEOUT_MS': True})
+
+
+@raises(QueueEmpty)
+@patch('django.conf.settings', global_settings)
+@patch('django_elasticache.memcached.get_cluster_info')
+def test_pool_timeout_raises_queue_empty(get_cluster_info):
+    get_cluster_info.return_value = {'nodes': ['h:p']}
+    backend = ElastiCache('h:0', {'POOL_TIMEOUT_MS': 50})
+    backend._lib.Client = Mock()
+    mock_pool = Mock()
+    mock_pool.get.side_effect = QueueEmpty()
+    backend._lib.ClientPool = Mock(return_value=mock_pool)
+    backend.get('k')
+
+
+@patch('django.conf.settings', global_settings)
+@patch('django_elasticache.memcached.get_cluster_info')
+def test_pool_timeout_passed_to_get(get_cluster_info):
+    # POOL_TIMEOUT_MS=500ms should reach pool.get() as timeout=0.5 seconds.
+    get_cluster_info.return_value = {'nodes': ['h:p']}
+    backend = ElastiCache('h:0', {'POOL_TIMEOUT_MS': 500})
+    mock_client = Mock()
+    backend._lib.Client = Mock()
+    mock_pool = Mock()
+    mock_pool.get.return_value = mock_client
+    backend._lib.ClientPool = Mock(return_value=mock_pool)
+    backend.get('k')
+    mock_pool.get.assert_called_once_with(block=True, timeout=0.5)
 
 
 @patch('django.conf.settings', global_settings)
@@ -39,16 +118,26 @@ def test_node_info_cache(get_cluster_info):
     }
 
     backend = ElastiCache('h:0', {})
+    mock_client = Mock()
     backend._lib.Client = Mock()
+    mock_pool = Mock()
+    mock_pool.get.return_value = mock_client
+    backend._lib.ClientPool = Mock(return_value=mock_pool)
+
     backend.set('key1', 'val')
     backend.get('key1')
     backend.set('key2', 'val')
     backend.get('key2')
-    backend._lib.Client.assert_called_once_with(servers)
-    eq_(backend._cache.get.call_count, 2)
-    eq_(backend._cache.set.call_count, 2)
 
+    # The cluster is discovered once and the master client is built once.
     get_cluster_info.assert_called_once_with('h', '0', None, False)
+    backend._lib.Client.assert_called_once_with(servers)
+
+    # Every op checks out a client via pool.get() and returns it via pool.put().
+    eq_(mock_pool.get.call_count, 4)
+    eq_(mock_pool.put.call_count, 4)
+    eq_(mock_client.get.call_count, 2)
+    eq_(mock_client.set.call_count, 2)
 
 
 @patch('django.conf.settings', global_settings)
@@ -60,47 +149,84 @@ def test_invalidate_cache(get_cluster_info):
     }
 
     backend = ElastiCache('h:0', {})
+    mock_client = Mock()
+    mock_client.get.side_effect = Exception()
     backend._lib.Client = Mock()
-    assert backend._cache
-    backend._cache.get = Mock()
-    backend._cache.get.side_effect = Exception()
+    mock_pool = Mock()
+    mock_pool.get.return_value = mock_client
+    # return_value so both pool builds (before and after the error-triggered clear) get the same mock_pool.
+    backend._lib.ClientPool = Mock(return_value=mock_pool)
+
     try:
         backend.get('key1', 'val')
     except Exception:
         pass
-    #  invalidate cached client
-    backend._local.client = None
+    # On error the node cache and pool are dropped, so the next op rediscovers the cluster and rebuilds.
     try:
         backend.get('key1', 'val')
     except Exception:
         pass
-    eq_(backend._cache.get.call_count, 2)
+    eq_(mock_client.get.call_count, 2)
     eq_(get_cluster_info.call_count, 2)
 
 
 @patch("django.conf.settings", global_settings)
 @patch("django_elasticache.memcached.get_cluster_info")
-def test_client_is_per_thread(get_cluster_info):
+def test_pool_is_bounded(get_cluster_info):
+    get_cluster_info.return_value = {"nodes": ["h1:p", "h2:p"]}
+    backend = ElastiCache("h:0", {"POOL_SIZE": 3})
+    backend._lib.Client = Mock()
+
+    # Mock ClientPool so the test stays isolated from pylibmc internals (e.g. how/when fill() clones clients).
+    mock_pool = Mock()
+    mock_pool.get.return_value = backend._lib.Client.return_value
+    backend._lib.ClientPool = Mock(return_value=mock_pool)
+
+    for _ in range(40):
+        backend.get("k")
+
+    # Pool is constructed with the master client and the configured POOL_SIZE.
+    backend._lib.ClientPool.assert_called_once_with(backend._lib.Client.return_value, 3)
+    # Every op checks out via pool.get() and returns via pool.put().
+    eq_(mock_pool.get.call_count, 40)
+    eq_(mock_pool.put.call_count, 40)
+
+
+@patch("django.conf.settings", global_settings)
+@patch("django_elasticache.memcached.get_cluster_info")
+def test_pool_built_once_under_concurrent_first_use(get_cluster_info):
+    # Verify that two threads racing on the first _cache access both pass the outer
+    # `if self._pool_proxy is not None` check, but only one builds the pool.
     get_cluster_info.return_value = {"nodes": ["h1:p", "h2:p"]}
     backend = ElastiCache("h:0", {})
-    # Each call to the Client constructor returns a distinct mock so we can tell threads apart.
-    backend._lib.Client = Mock(side_effect=lambda *a, **k: Mock())
+    backend._lib.Client = Mock()
 
-    clients = {}
+    # Count how many times ClientPools are constructed using a thread-safe counter.
+    pool_build_count = [0]  # Using list for nonlocal mutability in Python 2.
+    lock = threading.Lock()
 
-    def grab(name):
-        clients[name] = backend._cache
+    def make_pool(*args, **kwargs):
+        with lock:
+            pool_build_count[0] += 1
+        pool = Mock()
+        pool.get.return_value = Mock()
+        return pool
 
-    main_client = backend._cache
-    t1 = threading.Thread(target=grab, args=("t1",))
-    t2 = threading.Thread(target=grab, args=("t2",))
-    t1.start()
-    t1.join()
-    t2.start()
-    t2.join()
+    backend._lib.ClientPool = Mock(side_effect=make_pool)
 
-    # main, t1, t2 each built their own client.
-    assert clients["t1"] is not clients["t2"]
-    assert clients["t1"] is not main_client
-    assert clients["t2"] is not main_client
-    eq_(backend._lib.Client.call_count, 3)
+    # Use an Event to hold both threads at the starting line so they hit _cache simultaneously.
+    start = threading.Event()
+
+    def access_cache():
+        start.wait()
+        backend._cache  # noqa: B018
+
+    threads = [threading.Thread(target=access_cache) for _ in range(8)]
+    for t in threads:
+        t.start()
+    start.set()
+    for t in threads:
+        t.join()
+
+    # Despite 8 threads racing, the pool must be built exactly once.
+    eq_(pool_build_count[0], 1)
