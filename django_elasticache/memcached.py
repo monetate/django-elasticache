@@ -16,17 +16,13 @@ The pool is built lazily on first use (cluster discovery must happen first) unde
 calls do not each build their own pool.
 """
 import socket
-import sys
 import threading
 from functools import wraps
+
+import pylibmc
 from django.core.cache import InvalidCacheBackendError
 from django.core.cache.backends.memcached import PyLibMCCache
 from .cluster_utils import get_cluster_info
-
-if sys.version_info[0] < 3:
-    from Queue import Empty as QueueEmpty
-else:
-    from queue import Empty as QueueEmpty
 
 # Number of pooled pylibmc.Client objects per backend instance per process.
 DEFAULT_POOL_SIZE = 8
@@ -43,19 +39,21 @@ def _validate_positive_int(name, value):
 
 
 def invalidate_cache_after_error(f):
-    """Catch exceptions from cache operations and invalidate the cluster node cache and client pool so both are
-    rebuilt on the next call. QueueEmpty (pool exhaustion) is re-raised without invalidating since it is not a
-    topology error.
+    """Catch system/network-level errors and invalidate the cluster node cache and client pool so both are rebuilt on
+    the next call. Only errors that indicate a node is unreachable trigger invalidation. Transient errors (timeouts,
+    dropped connections, protocol errors) and pool exhaustion propagate without clearing the node cache.
     """
     @wraps(f)
     def wrapper(self, *args, **kwds):
         try:
             return f(self, *args, **kwds)
-        except QueueEmpty:  # Don't clear cluster nodes on pool exhaustion.
-            raise
-        # TODO: Narrow to only invalidate on system/network-level errors. Clearing nodes on any exception is too broad
-        # and causes unnecessary rediscovery churn.
-        except Exception:
+        except (
+            pylibmc.ConnectionError,
+            pylibmc.HostLookupError,
+            pylibmc.NoServers,
+            pylibmc.ServerDead,
+            pylibmc.ServerDown,
+        ):
             self.clear_cluster_nodes_cache()
             raise
     return wrapper

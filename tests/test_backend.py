@@ -9,6 +9,7 @@ else:
     from queue import Empty as QueueEmpty
     from unittest.mock import patch, Mock
 
+import pylibmc
 from django_elasticache.memcached import ElastiCache
 from django.core.cache import InvalidCacheBackendError
 
@@ -67,17 +68,26 @@ def test_invalid_pool_timeout_bool():
     ElastiCache('h:0', {'POOL_TIMEOUT_MS': True})
 
 
-@raises(QueueEmpty)
 @patch('django.conf.settings', global_settings)
 @patch('django_elasticache.memcached.get_cluster_info')
-def test_pool_timeout_raises_queue_empty(get_cluster_info):
+def test_pool_exhaustion_propagates_without_invalidating(get_cluster_info):
+    # Pool exhaustion surfaces as QueueEmpty, which is not a pylibmc error, so it propagates without rediscovery.
     get_cluster_info.return_value = {'nodes': ['h:p']}
-    backend = ElastiCache('h:0', {'POOL_TIMEOUT_MS': 50})
+    backend = ElastiCache('h:0', {})
     backend._lib.Client = Mock()
     mock_pool = Mock()
     mock_pool.get.side_effect = QueueEmpty()
     backend._lib.ClientPool = Mock(return_value=mock_pool)
-    backend.get('k')
+
+    raised = 0
+    for _ in range(2):
+        try:
+            backend.get('k')
+        except QueueEmpty:
+            raised += 1
+    # QueueEmpty reaches the caller untouched, and the node cache survives so the second op does not rediscover.
+    eq_(raised, 2)
+    eq_(get_cluster_info.call_count, 1)
 
 
 @patch('django.conf.settings', global_settings)
@@ -140,17 +150,30 @@ def test_node_info_cache(get_cluster_info):
     eq_(mock_client.set.call_count, 2)
 
 
+# The errors invalidate_cache_after_error should treat as system/network-level failures worth rediscovering on.
+INVALIDATING_ERRORS = [
+    pylibmc.ConnectionError,
+    pylibmc.HostLookupError,
+    pylibmc.NoServers,
+    pylibmc.ServerDead,
+    pylibmc.ServerDown,
+]
+
+
+def test_invalidate_cache():
+    # nose generator: one case per caught error. @patch lives on the check, not here, so it is active per case.
+    for error in INVALIDATING_ERRORS:
+        yield check_invalidate_cache_on_error, error
+
+
 @patch('django.conf.settings', global_settings)
 @patch('django_elasticache.memcached.get_cluster_info')
-def test_invalidate_cache(get_cluster_info):
-    servers = ['h1:p', 'h2:p']
-    get_cluster_info.return_value = {
-        'nodes': servers
-    }
+def check_invalidate_cache_on_error(error, get_cluster_info):
+    get_cluster_info.return_value = {'nodes': ['h1:p', 'h2:p']}
 
     backend = ElastiCache('h:0', {})
     mock_client = Mock()
-    mock_client.get.side_effect = Exception()
+    mock_client.get.side_effect = error()
     backend._lib.Client = Mock()
     mock_pool = Mock()
     mock_pool.get.return_value = mock_client
@@ -168,6 +191,33 @@ def test_invalidate_cache(get_cluster_info):
         pass
     eq_(mock_client.get.call_count, 2)
     eq_(get_cluster_info.call_count, 2)
+
+
+@patch('django.conf.settings', global_settings)
+@patch('django_elasticache.memcached.get_cluster_info')
+def test_transient_error_does_not_invalidate_cache(get_cluster_info):
+    # A transient error (e.g. a timeout surfacing as the base pylibmc.Error) must not trigger rediscovery.
+    get_cluster_info.return_value = {'nodes': ['h1:p', 'h2:p']}
+
+    backend = ElastiCache('h:0', {})
+    mock_client = Mock()
+    mock_client.get.side_effect = pylibmc.Error()
+    backend._lib.Client = Mock()
+    mock_pool = Mock()
+    mock_pool.get.return_value = mock_client
+    backend._lib.ClientPool = Mock(return_value=mock_pool)
+
+    try:
+        backend.get('key1', 'val')
+    except Exception:
+        pass
+    # Node cache and pool are preserved, so the next op reuses them without rediscovering.
+    try:
+        backend.get('key1', 'val')
+    except Exception:
+        pass
+    eq_(mock_client.get.call_count, 2)
+    eq_(get_cluster_info.call_count, 1)
 
 
 @patch("django.conf.settings", global_settings)
