@@ -13,7 +13,7 @@ Requirements
 * pylibmc
 * Django 1.5+.
 
-It was written and tested on Python 2.7 and 3.4.
+It was written and tested on Python 2.7 and 3.7.
 
 Installation
 ------------
@@ -169,3 +169,9 @@ Install the test dependencies and run the tests like this::
 
     pip install -e '.[test]'
     pytest
+
+To run the suite across the supported Python versions (2.7 and 3.7), use tox::
+
+    tox
+
+These steps are also wrapped in the Makefile as ``make install``, ``make test``, and ``make tox``.
