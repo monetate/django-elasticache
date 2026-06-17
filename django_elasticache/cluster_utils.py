@@ -52,7 +52,7 @@ def get_cluster_info(host, port, discovery_timeout, ignore_cluster_errors=False)
 
     if res == b'ERROR\r\n' and ignore_cluster_errors:
         return {
-            'version': version,
+            'version': smart_text(version),
             'nodes': [
                 '{0}:{1}'.format(smart_text(host),
                                smart_text(port))
