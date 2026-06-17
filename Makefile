@@ -1,13 +1,16 @@
-.PHONY: test install tox clean
+.PHONY: test install install-test test-tox clean
 
 test:
 	pytest
 
 install:
+	pip install -e .
+
+install-test:
 	pip install -e '.[test]'
 
-# tox runs the suite on every supported interpreter (2.7 and 3.7).
-tox:
+# test-tox runs the suite on every supported interpreter (2.7 and 3.7); Jenkins CI invokes this target.
+test-tox:
 	tox
 
 clean:

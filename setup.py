@@ -23,6 +23,8 @@ setup(
             "pytest>=4.6; python_version >= '3.0'",
             "mock; python_version < '3.0'",
         ],
+        # Orchestration tooling for the outer env. tox builds and runs the per-version test envs.
+        "dev": ["tox"],
     },
     classifiers=[
         'Development Status :: 4 - Beta',
