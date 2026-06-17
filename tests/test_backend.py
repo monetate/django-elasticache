@@ -1,6 +1,6 @@
 import threading
 from django.conf import global_settings
-from nose.tools import eq_, raises
+import pytest
 import sys
 if sys.version < '3':
     from mock import patch, Mock
@@ -14,58 +14,58 @@ from django_elasticache.memcached import ElastiCache
 from django.core.cache import InvalidCacheBackendError
 
 
-@raises(Exception)
 @patch('django.conf.settings', global_settings)
 def test_wrong_params():
-    ElastiCache('qew', {})
+    with pytest.raises(Exception):
+        ElastiCache('qew', {})
 
 
-@raises(InvalidCacheBackendError)
 @patch('django.conf.settings', global_settings)
 def test_invalid_pool_size_string():
-    ElastiCache('h:0', {'POOL_SIZE': 'not-a-number'})
+    with pytest.raises(InvalidCacheBackendError):
+        ElastiCache('h:0', {'POOL_SIZE': 'not-a-number'})
 
 
-@raises(InvalidCacheBackendError)
 @patch('django.conf.settings', global_settings)
 def test_invalid_pool_size_zero():
-    ElastiCache('h:0', {'POOL_SIZE': 0})
+    with pytest.raises(InvalidCacheBackendError):
+        ElastiCache('h:0', {'POOL_SIZE': 0})
 
 
-@raises(InvalidCacheBackendError)
 @patch('django.conf.settings', global_settings)
 def test_invalid_pool_size_float():
-    ElastiCache('h:0', {'POOL_SIZE': 3.7})
+    with pytest.raises(InvalidCacheBackendError):
+        ElastiCache('h:0', {'POOL_SIZE': 3.7})
 
 
-@raises(InvalidCacheBackendError)
 @patch('django.conf.settings', global_settings)
 def test_invalid_pool_size_bool():
-    ElastiCache('h:0', {'POOL_SIZE': True})
+    with pytest.raises(InvalidCacheBackendError):
+        ElastiCache('h:0', {'POOL_SIZE': True})
 
 
-@raises(InvalidCacheBackendError)
 @patch('django.conf.settings', global_settings)
 def test_invalid_pool_timeout_negative():
-    ElastiCache('h:0', {'POOL_TIMEOUT_MS': -1})
+    with pytest.raises(InvalidCacheBackendError):
+        ElastiCache('h:0', {'POOL_TIMEOUT_MS': -1})
 
 
-@raises(InvalidCacheBackendError)
 @patch('django.conf.settings', global_settings)
 def test_invalid_pool_timeout_zero():
-    ElastiCache('h:0', {'POOL_TIMEOUT_MS': 0})
+    with pytest.raises(InvalidCacheBackendError):
+        ElastiCache('h:0', {'POOL_TIMEOUT_MS': 0})
 
 
-@raises(InvalidCacheBackendError)
 @patch('django.conf.settings', global_settings)
 def test_invalid_pool_timeout_float():
-    ElastiCache('h:0', {'POOL_TIMEOUT_MS': 1.5})
+    with pytest.raises(InvalidCacheBackendError):
+        ElastiCache('h:0', {'POOL_TIMEOUT_MS': 1.5})
 
 
-@raises(InvalidCacheBackendError)
 @patch('django.conf.settings', global_settings)
 def test_invalid_pool_timeout_bool():
-    ElastiCache('h:0', {'POOL_TIMEOUT_MS': True})
+    with pytest.raises(InvalidCacheBackendError):
+        ElastiCache('h:0', {'POOL_TIMEOUT_MS': True})
 
 
 @patch('django.conf.settings', global_settings)
@@ -86,8 +86,8 @@ def test_pool_exhaustion_propagates_without_invalidating(get_cluster_info):
         except QueueEmpty:
             raised += 1
     # QueueEmpty reaches the caller untouched, and the node cache survives so the second op does not rediscover.
-    eq_(raised, 2)
-    eq_(get_cluster_info.call_count, 1)
+    assert raised == 2
+    assert get_cluster_info.call_count == 1
 
 
 @patch('django.conf.settings', global_settings)
@@ -144,10 +144,10 @@ def test_node_info_cache(get_cluster_info):
     backend._lib.Client.assert_called_once_with(servers)
 
     # Every op checks out a client via pool.get() and returns it via pool.put().
-    eq_(mock_pool.get.call_count, 4)
-    eq_(mock_pool.put.call_count, 4)
-    eq_(mock_client.get.call_count, 2)
-    eq_(mock_client.set.call_count, 2)
+    assert mock_pool.get.call_count == 4
+    assert mock_pool.put.call_count == 4
+    assert mock_client.get.call_count == 2
+    assert mock_client.set.call_count == 2
 
 
 # The errors invalidate_cache_after_error should treat as system/network-level failures worth rediscovering on.
@@ -160,15 +160,10 @@ INVALIDATING_ERRORS = [
 ]
 
 
-def test_invalidate_cache():
-    # nose generator: one case per caught error. @patch lives on the check, not here, so it is active per case.
-    for error in INVALIDATING_ERRORS:
-        yield check_invalidate_cache_on_error, error
-
-
+@pytest.mark.parametrize("error", INVALIDATING_ERRORS)
 @patch('django.conf.settings', global_settings)
 @patch('django_elasticache.memcached.get_cluster_info')
-def check_invalidate_cache_on_error(error, get_cluster_info):
+def test_invalidate_cache_on_error(get_cluster_info, error):
     get_cluster_info.return_value = {'nodes': ['h1:p', 'h2:p']}
 
     backend = ElastiCache('h:0', {})
@@ -187,9 +182,9 @@ def check_invalidate_cache_on_error(error, get_cluster_info):
             backend.get('key1', 'val')
         except error:
             raised += 1
-    eq_(raised, 2)
-    eq_(mock_client.get.call_count, 2)
-    eq_(get_cluster_info.call_count, 2)
+    assert raised == 2
+    assert mock_client.get.call_count == 2
+    assert get_cluster_info.call_count == 2
 
 
 @patch('django.conf.settings', global_settings)
@@ -213,9 +208,9 @@ def test_transient_error_does_not_invalidate_cache(get_cluster_info):
             backend.get('key1', 'val')
         except pylibmc.Error:
             raised += 1
-    eq_(raised, 2)
-    eq_(mock_client.get.call_count, 2)
-    eq_(get_cluster_info.call_count, 1)
+    assert raised == 2
+    assert mock_client.get.call_count == 2
+    assert get_cluster_info.call_count == 1
 
 
 @patch("django.conf.settings", global_settings)
@@ -236,8 +231,8 @@ def test_pool_is_bounded(get_cluster_info):
     # Pool is constructed with the master client and the configured POOL_SIZE.
     backend._lib.ClientPool.assert_called_once_with(backend._lib.Client.return_value, 3)
     # Every op checks out via pool.get() and returns via pool.put().
-    eq_(mock_pool.get.call_count, 40)
-    eq_(mock_pool.put.call_count, 40)
+    assert mock_pool.get.call_count == 40
+    assert mock_pool.put.call_count == 40
 
 
 @patch("django.conf.settings", global_settings)
@@ -277,4 +272,4 @@ def test_pool_built_once_under_concurrent_first_use(get_cluster_info):
         t.join()
 
     # Despite 8 threads racing, the pool must be built exactly once.
-    eq_(pool_build_count[0], 1)
+    assert pool_build_count[0] == 1

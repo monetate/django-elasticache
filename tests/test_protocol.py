@@ -1,6 +1,6 @@
 from django_elasticache.cluster_utils import (
     get_cluster_info, WrongProtocolData)
-from nose.tools import eq_, raises
+import pytest
 import sys
 if sys.version < '3':
     from mock import patch, call, MagicMock
@@ -47,14 +47,14 @@ def test_happy_path(Telnet):
     client.read_until.side_effect = TEST_PROTOCOL_1_READ_UNTIL
     client.expect.side_effect = TEST_PROTOCOL_1_EXPECT
     info = get_cluster_info('', 0, None)
-    eq_(info['version'], 1)
-    eq_(info['nodes'], ['ip:port', 'host:port'])
+    assert info['version'] == 1
+    assert info['nodes'] == ['ip:port', 'host:port']
 
 
-@raises(WrongProtocolData)
 @patch('django_elasticache.cluster_utils.Telnet', MagicMock())
 def test_bad_protocol():
-    get_cluster_info('', 0, None)
+    with pytest.raises(WrongProtocolData):
+        get_cluster_info('', 0, None)
 
 
 @patch('django_elasticache.cluster_utils.Telnet')
@@ -108,17 +108,17 @@ def test_no_configuration_protocol_support_with_errors_ignored(Telnet):
         call(b'version\n'),
         call(b'config get cluster\n'),
     ])
-    eq_(info['version'], '1.4.34')
-    eq_(info['nodes'], ['test:0'])
+    assert info['version'] == '1.4.34'
+    assert info['nodes'] == ['test:0']
 
 
-@raises(WrongProtocolData)
 @patch('django_elasticache.cluster_utils.Telnet')
 def test_no_configuration_protocol_support_with_errors(Telnet):
     client = Telnet.return_value
     client.read_until.side_effect = TEST_PROTOCOL_4_READ_UNTIL
     client.expect.side_effect = TEST_PROTOCOL_4_EXPECT
-    get_cluster_info('test', 0, None, ignore_cluster_errors=False)
+    with pytest.raises(WrongProtocolData):
+        get_cluster_info('test', 0, None, ignore_cluster_errors=False)
     client.write.assert_has_calls([
         call(b'version\n'),
         call(b'config get cluster\n'),

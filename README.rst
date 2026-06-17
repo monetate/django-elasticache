@@ -165,6 +165,7 @@ this graph:
 Testing
 -------
 
-Run the tests like this::
+Install the test dependencies and run the tests like this::
 
-    nosetests
+    pip install -e '.[test]'
+    pytest
