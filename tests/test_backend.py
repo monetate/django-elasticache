@@ -180,15 +180,14 @@ def check_invalidate_cache_on_error(error, get_cluster_info):
     # return_value so both pool builds (before and after the error-triggered clear) get the same mock_pool.
     backend._lib.ClientPool = Mock(return_value=mock_pool)
 
-    try:
-        backend.get('key1', 'val')
-    except Exception:
-        pass
-    # On error the node cache and pool are dropped, so the next op rediscovers the cluster and rebuilds.
-    try:
-        backend.get('key1', 'val')
-    except Exception:
-        pass
+    # Each call raises the caught error to the caller and drops the node cache, so the next op rediscovers.
+    raised = 0
+    for _ in range(2):
+        try:
+            backend.get('key1', 'val')
+        except error:
+            raised += 1
+    eq_(raised, 2)
     eq_(mock_client.get.call_count, 2)
     eq_(get_cluster_info.call_count, 2)
 
@@ -207,15 +206,14 @@ def test_transient_error_does_not_invalidate_cache(get_cluster_info):
     mock_pool.get.return_value = mock_client
     backend._lib.ClientPool = Mock(return_value=mock_pool)
 
-    try:
-        backend.get('key1', 'val')
-    except Exception:
-        pass
-    # Node cache and pool are preserved, so the next op reuses them without rediscovering.
-    try:
-        backend.get('key1', 'val')
-    except Exception:
-        pass
+    # The transient error reaches the caller but the node cache and pool are preserved, so the next op reuses them.
+    raised = 0
+    for _ in range(2):
+        try:
+            backend.get('key1', 'val')
+        except pylibmc.Error:
+            raised += 1
+    eq_(raised, 2)
     eq_(mock_client.get.call_count, 2)
     eq_(get_cluster_info.call_count, 1)
 

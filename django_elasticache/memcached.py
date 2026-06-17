@@ -10,7 +10,7 @@ Top-level configuration params (siblings of ``OPTIONS``, like ``DISCOVERY_TIMEOU
 
 - ``POOL_SIZE`` (int, default 8): number of pooled clients per process.
 - ``POOL_TIMEOUT_MS`` (int, milliseconds, default 1000): how long to wait for a free client before raising
-  ``QueueEmpty``. Callers such as ``KeyCheckingMemcache`` catch and handle this like any other cache error.
+  ``queue.Empty``. Callers such as ``KeyCheckingMemcache`` catch and handle this like any other cache error.
 
 The pool is built lazily on first use (cluster discovery must happen first) under a lock so concurrent first
 calls do not each build their own pool.
@@ -27,7 +27,7 @@ from .cluster_utils import get_cluster_info
 # Number of pooled pylibmc.Client objects per backend instance per process.
 DEFAULT_POOL_SIZE = 8
 
-# On exhaustion raises QueueEmpty.
+# On exhaustion raises queue.Empty.
 DEFAULT_POOL_TIMEOUT_MS = 1000
 
 
@@ -70,12 +70,12 @@ class PooledClient(object):
 
     def __init__(self, pool, timeout=None):
         self.pool = pool
-        self.timeout = timeout  # Seconds to wait for a free client before raising QueueEmpty.
+        self.timeout = timeout  # Seconds to wait for a free client before raising queue.Empty.
 
     def __getattr__(self, name):
         def call(*args, **kwargs):
             # ClientPool is a Queue subclass. Call get()/put() directly rather than reserve() because it does not expose
-            # a timeout parameter. Raises QueueEmpty on pool exhaustion; callers (e.g. KeyCheckingMemcache) handle it.
+            # a timeout parameter. Raises queue.Empty on pool exhaustion; callers (e.g. KeyCheckingMemcache) handle it.
             mc = self.pool.get(block=True, timeout=self.timeout)
             try:
                 return getattr(mc, name)(*args, **kwargs)
