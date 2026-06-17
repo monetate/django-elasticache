@@ -41,7 +41,7 @@ def _validate_positive_int(name, value):
 def invalidate_cache_after_error(f):
     """Catch system/network-level errors and invalidate the cluster node cache and client pool so both are rebuilt on
     the next call. Only errors that indicate a node is unreachable trigger invalidation. Transient errors (timeouts,
-    dropped connections, protocol errors) and pool exhaustion propagate without clearing the node cache.
+    mid-operation read/write failures, protocol errors) and pool exhaustion propagate without clearing the node cache.
     """
     @wraps(f)
     def wrapper(self, *args, **kwds):
