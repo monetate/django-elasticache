@@ -10,28 +10,24 @@ Top-level configuration params (siblings of ``OPTIONS``, like ``DISCOVERY_TIMEOU
 
 - ``POOL_SIZE`` (int, default 8): number of pooled clients per process.
 - ``POOL_TIMEOUT_MS`` (int, milliseconds, default 1000): how long to wait for a free client before raising
-  ``QueueEmpty``. Callers such as ``KeyCheckingMemcache`` catch and handle this like any other cache error.
+  ``queue.Empty``. Callers such as ``KeyCheckingMemcache`` catch and handle this like any other cache error.
 
 The pool is built lazily on first use (cluster discovery must happen first) under a lock so concurrent first
 calls do not each build their own pool.
 """
 import socket
-import sys
 import threading
 from functools import wraps
+
+import pylibmc
 from django.core.cache import InvalidCacheBackendError
 from django.core.cache.backends.memcached import PyLibMCCache
 from .cluster_utils import get_cluster_info
 
-if sys.version_info[0] < 3:
-    from Queue import Empty as QueueEmpty
-else:
-    from queue import Empty as QueueEmpty
-
 # Number of pooled pylibmc.Client objects per backend instance per process.
 DEFAULT_POOL_SIZE = 8
 
-# On exhaustion raises QueueEmpty.
+# On exhaustion raises queue.Empty.
 DEFAULT_POOL_TIMEOUT_MS = 1000
 
 
@@ -43,19 +39,21 @@ def _validate_positive_int(name, value):
 
 
 def invalidate_cache_after_error(f):
-    """Catch exceptions from cache operations and invalidate the cluster node cache and client pool so both are
-    rebuilt on the next call. QueueEmpty (pool exhaustion) is re-raised without invalidating since it is not a
-    topology error.
+    """Catch system/network-level errors and invalidate the cluster node cache and client pool so both are rebuilt on
+    the next call. Only errors that indicate a node is unreachable trigger invalidation. Transient errors (timeouts,
+    mid-operation read/write failures, protocol errors) and pool exhaustion propagate without clearing the node cache.
     """
     @wraps(f)
     def wrapper(self, *args, **kwds):
         try:
             return f(self, *args, **kwds)
-        except QueueEmpty:  # Don't clear cluster nodes on pool exhaustion.
-            raise
-        # TODO: Narrow to only invalidate on system/network-level errors. Clearing nodes on any exception is too broad
-        # and causes unnecessary rediscovery churn.
-        except Exception:
+        except (
+            pylibmc.ConnectionError,
+            pylibmc.HostLookupError,
+            pylibmc.NoServers,
+            pylibmc.ServerDead,
+            pylibmc.ServerDown,
+        ):
             self.clear_cluster_nodes_cache()
             raise
     return wrapper
@@ -72,12 +70,12 @@ class PooledClient(object):
 
     def __init__(self, pool, timeout=None):
         self.pool = pool
-        self.timeout = timeout  # Seconds to wait for a free client before raising QueueEmpty.
+        self.timeout = timeout  # Seconds to wait for a free client before raising queue.Empty.
 
     def __getattr__(self, name):
         def call(*args, **kwargs):
             # ClientPool is a Queue subclass. Call get()/put() directly rather than reserve() because it does not expose
-            # a timeout parameter. Raises QueueEmpty on pool exhaustion; callers (e.g. KeyCheckingMemcache) handle it.
+            # a timeout parameter. Raises queue.Empty on pool exhaustion; callers (e.g. KeyCheckingMemcache) handle it.
             mc = self.pool.get(block=True, timeout=self.timeout)
             try:
                 return getattr(mc, name)(*args, **kwargs)
