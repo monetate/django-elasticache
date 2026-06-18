@@ -1,3 +1,1 @@
-VERSION = (1, 0, 3)
-MONETATE_PATCH = 6
-__version__ = ".".join(map(str, VERSION)) + "+monetate.{}".format(MONETATE_PATCH)
+__version__ = "1.0.3+monetate.6"
