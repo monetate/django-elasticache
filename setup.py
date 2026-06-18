@@ -19,9 +19,10 @@ setup(
     extras_require={
         # Install with `pip install -e '.[test]'`. mock is the py2 backport of py3's stdlib unittest.mock.
         "test": [
+            "mock; python_version < '3.0'",
             "pytest>=4.6,<5.0; python_version < '3.0'",
             "pytest>=4.6; python_version >= '3.0'",
-            "mock; python_version < '3.0'",
+            "tox",
         ],
     },
     classifiers=[
