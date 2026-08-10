@@ -83,7 +83,9 @@ pipeline {
         FROM_JENKINS=true
     }
     options {
-        buildDiscarder(logRotator(daysToKeepStr: '60'))
+        // Both day and count caps are required -- a day-only rotator keeps every
+        // build produced inside the window, which is unbounded disk on the controller.
+        buildDiscarder(logRotator(daysToKeepStr: '60', numToKeepStr: '100'))
         timestamps()
     }
     stages {
